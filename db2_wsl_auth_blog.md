@@ -1,10 +1,11 @@
-# IBM Db2 on WSL: The One Linux Permission That Silently Breaks Remote Authentication
+# The bit that broke Db2
+## The One Linux Permission That Silently Breaks Remote Authentication
 
 *Db2 runs flawlessly inside WSL. Every remote client fails. Here's why — and the two commands that fix it.*
 
 ---
 
-I spent longer than I'd like to admit debugging this. IBM Db2 12.1, running inside WSL2 on Ubuntu, worked perfectly from the command line. Local Python scripts connected fine. The TCP/IP listener was up. Windows could reach the port. And yet:
+Recently, I installed Db2 (LUW) 12.1.4 on Ubuntu 24.04 running under WSL (Windows Subsystem for Linux) on my Windows laptop. All went well. I could access it via the db2cli and via home-grown Python code (no authentication necessary, as I was connecting locally). I was happy. Slightly disappointed that IBM had dropped support for the DB2Connect extension for Visual Studio Code. Imagine my delight when I heard that IBM were replacing it with the IBM Db2 Developer Extension! I tried it out immediately. And was immediately disappointed. Not with the extension itself, but the fact that I couldn’t get it to talk to Db2 in the first place. This is my story.
 
 ```
 ERRORCODE=-4499
@@ -17,16 +18,16 @@ The actual root cause? A single Linux permission bit on a binary most Db2 users 
 
 ---
 
-## The Environment
+### The Environment
 
 - IBM Db2 12.1 LUW on Ubuntu 22.04 under WSL2
 - Db2 instance running, TCP/IP enabled, listener confirmed active
-- Default WSL user (matching my Windows username) — *not* the instance owner
-- Clients: Windows Db2 CLP, VS Code Db2 Developer Extension
+- Default WSL user (matching my Windows username) — coincidentally (or not), the instance owner
+- Clients: Db2 CLP, VS Code IBM Db2 Developer Extension
 
 ---
 
-## What Didn't Matter (And Will Waste Your Time)
+### What Didn't Matter (And Will Waste Your Time)
 
 The failure pattern points you toward the wrong things. Before finding the actual cause, I ruled out — correctly — all of the following:
 
@@ -42,7 +43,7 @@ If Windows can reach the port and Db2 is working locally, none of those are your
 
 ---
 
-## One Rule You Can't Break: Don't Use the Instance Owner Remotely
+### One Rule You Can't Break: Don't Use the Instance Owner Remotely
 
 Db2 explicitly forbids remote TCP/IP authentication for the instance owner. This is by design, not a misconfiguration. Local CLI access in WSL works fine for the instance owner; remote connections do not — ever.
 
