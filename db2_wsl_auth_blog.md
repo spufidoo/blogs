@@ -4,54 +4,133 @@
 *Db2 runs flawlessly inside WSL. Every remote client fails. Here's why — and the two commands that fix it.*
 
 ---
+### The Beginning
 
 Recently, I installed Db2 (LUW) 12.1.4 on Ubuntu 24.04 running under WSL (Windows Subsystem for Linux) on my Windows laptop. All went well. I could access it via the db2cli and via home-grown Python code (no authentication necessary, as I was connecting locally). I was happy. Slightly disappointed that IBM had dropped support for the DB2Connect extension for Visual Studio Code. Imagine my delight when I heard that IBM were replacing it with the IBM Db2 Developer Extension! I tried it out immediately. And was immediately disappointed. Not with the extension itself, but the fact that I couldn’t get it to talk to Db2 in the first place. This is my story.
 
+### The Middle
+
+I wouldn’t have guessed that I’d fall at the first hurdle. Trying to register my local Db2 instance returned:
+
 ```
-ERRORCODE=-4499
+Connection test failed
+Database connection failed. Please verify connection parameters. ERRORCODE=-4499, SQLSTATE=08001
+
+```
+My username was correct, my password was correct, my hostname was correct. Hmmm… What was the port number ? 50000? No. 25000? No. OK. Check the port number.
+```
+db2 get dbm cfg | grep -i comm
+```
+…Nothing. Aha! Let’s fix that.
+```
+db2set DB2COMM=TCPIP
+db2 update dbm cfg using SVCENAME 25000
+db2stop
+db2start
+```
+Confirm it is listening:
+```
+ss -lntp | grep 25000
+LISTEN 0      4096              0.0.0.0:25000      0.0.0.0:*    users:(("db2sysc",pid=13958,fd=26))
+```
+Yay! Now check that the dbm authentication is correct:
+```
+db2 get dbm cfg | grep -i authentication
+ Server Connection Authentication      (SRVCON_AUTH) = NOT_SPECIFIED
+ Database manager authentication    (AUTHENTICATION) = SERVER
+ Alternate authentication       (ALTERNATE_AUTH_ENC) = NOT_SPECIFIED
+ Trusted client authentication      (TRUST_CLNTAUTH) = CLIENT
+```
+Let’s try connecting again… Nope. Same error. Over to you AI (Another Idiot)… After much to-ing and fro-ing, and many false recommendations from Copilot, I ended up creating another WSL Linux user, **db2user** – which, we will find, was unnecessary.
+```
+sudo adduser db2user
+sudo passwd db2user
+db2 connect to SAMPLE 
+db2 grant connect on database to user db2user
+```
+I could connect to my instance nicely, but could I connect to my instance from Windows itself? So I tried it…
+```
+❯ Test-NetConnection localhost -Port 25000
+WARNING: TCP connect to (::1 : 25000) failed
+ComputerName     : localhost
+RemoteAddress    : 127.0.0.1
+RemotePort       : 25000
+InterfaceAlias   : Loopback Pseudo-Interface 1
+SourceAddress    : 127.0.0.1
+TcpTestSucceeded : True
+```
+Yay! Windows recognised the open port, so could I connect to Db2?
+```
+❯ db2 connect to SAMPLE
+SQL30082N  Security processing failed with reason "3" ("PASSWORD MISSING").
 SQLSTATE=08001
+❯ db2 connect to SAMPLE user db2user using password
+SQL1639N  The database server was unable to perform authentication
+because security-related database manager files on the server do not
+have the required operating system permissions.  SQLSTATE=08001
 ```
+BINGO! That was it! On Linux (including WSL), Db2 performs password authentication via setuid helper binaries, most importantly:
 
-Every remote client — Windows Db2 CLP, VS Code's IBM Db2 Developer Extension, JDBC — refused to authenticate. The errors were vague enough to send you in entirely the wrong direction.
+**~/sqllib/security/db2ckpw**
 
-The actual root cause? A single Linux permission bit on a binary most Db2 users have never heard of.
+This binary must be:
+- owned by the instance owner (or root)
+- group-owned by db2iadm1 (or the instance group, or root)
+- setuid-root
+- executable
+
+If any of that is wrong, Db2 cannot authenticate remote users → SQL1639N.
+
+So I set the correct ownership:
+```
+sudo chown root:root ~/sqllib/security/db2ckpw
+```
+I set the correct permissions:
+```
+sudo chmod 4755 ~/sqllib/security/db2ckpw
+```
+Checked the output:
+```
+ls -l ~/sqllib/security/db2ckpw
+-rwsr-xr-x 1 root root 3033512 Mar 12 17:55
+```
+Restarted Db2, and tried again…
+```
+❯ db2 connect to SAMPLE user db2user using password
+   Database Connection Information
+ Database server        = DB2/LINUXX8664 12.1.4.0
+ SQL authorization ID   = DB2USER
+ Local database alias   = SAMPLE
+```
+Yay! 🎉Result.
 
 ---
 
-### The Environment
+### The End
 
+#### My Environment
 - IBM Db2 12.1 LUW on Ubuntu 22.04 under WSL2
 - Db2 instance running, TCP/IP enabled, listener confirmed active
 - Default WSL user (matching my Windows username) — coincidentally (or not), the instance owner
 - Clients: Db2 CLP, VS Code IBM Db2 Developer Extension
 
----
+#### What Also Mattered
 
-### What Didn't Matter (And Will Waste Your Time)
+Before finding the actual cause, I had to find out the hard way that Db2 didn't automatically install TCPIP connectivity:
 
-The failure pattern points you toward the wrong things. Before finding the actual cause, I ruled out — correctly — all of the following:
-
-- **`DB2COMM=TCPIP`** — already set
-- **`SVCENAME`** — port was listening; `ss -lntp | grep 25000` confirmed it
+- **`DB2COMM=TCPIP`** — was already set, but
+- **`SVCENAME`** — port was not listening; starting it and issuing `ss -lntp | grep 25000` confirmed it
 - **`AUTHENTICATION=SERVER`** — correct for Db2 12.1
 - **TRUST settings** — `TRUST_ALLCLNTS=YES` is enforced when `AUTHENTICATION=SERVER`; you can't usefully change this
 - **Windows firewall / WSL networking** — `Test-NetConnection` succeeded
 - **VS Code configuration** — not the issue
-- **Creating a separate `db2user` OS account** — unnecessary (more on this below)
+- **Creating a separate `db2user` OS account** — unnecessary
 
 If Windows can reach the port and Db2 is working locally, none of those are your problem.
 
 ---
 
-### One Rule You Can't Break: Don't Use the Instance Owner Remotely
-
-Db2 explicitly forbids remote TCP/IP authentication for the instance owner. This is by design, not a misconfiguration. Local CLI access in WSL works fine for the instance owner; remote connections do not — ever.
-
-What this means in practice: any other valid Linux user with a real password can authenticate remotely. Your default WSL user is fine, provided it isn't the instance owner and has a password set in `/etc/shadow`. There's no need to create a dedicated `db2user` OS account unless you specifically want one.
-
----
-
-## The Actual Root Cause: `db2ckpw`
+#### The Actual Root Cause: `db2ckpw`
 
 On Linux, Db2 doesn't validate remote passwords itself. It delegates that work to a privileged helper binary:
 
@@ -73,17 +152,16 @@ The setuid bit is the critical part. When Linux executes a setuid-root binary, t
 When the bit is missing or ownership is wrong, this is what you get:
 
 ```
-SQL1639N The database server was unable to perform authentication because
-security-related database manager files on the server do not have the
-required operating system permissions.
-SQLSTATE=08001
+SQL1639N  The database server was unable to perform authentication
+because security-related database manager files on the server do not
+have the required operating system permissions.  SQLSTATE=08001
 ```
 
 `SQL1639N` is actually a useful error once you know what it's pointing at. The cryptic `ERRORCODE=-4499` you'll see from JDBC is the same underlying failure, just reported at the driver level.
 
 ---
 
-## Why WSL Is Especially Prone to This
+#### Why WSL Is Especially Prone to This
 
 WSL fully supports Linux setuid semantics — but it doesn't protect them from you. Any of the following can silently strip the bit:
 
