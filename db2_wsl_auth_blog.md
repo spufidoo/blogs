@@ -10,7 +10,7 @@ Recently, I installed Db2 (LUW) 12.1.4 on Ubuntu 24.04 running under WSL (Window
 
 ### The Middle
 
-I wouldn’t have guessed that I’d fall at the first hurdle. Trying to register my local Db2 instance returned:
+I wouldn’t have guessed that I’d fall at the first hurdle - Trying to register my local Db2 instance! It returned:
 
 ```
 Connection test failed
@@ -33,24 +33,22 @@ Confirm it is listening:
 ss -lntp | grep 25000
 LISTEN 0      4096              0.0.0.0:25000      0.0.0.0:*    users:(("db2sysc",pid=13958,fd=26))
 ```
-Yay! Now check that the dbm authentication is correct:
+Yay! Now check that the dbm authentication is correct, with ``db2 get dbm cfg | grep -i authentication``
 ```
-db2 get dbm cfg | grep -i authentication
  Server Connection Authentication      (SRVCON_AUTH) = NOT_SPECIFIED
  Database manager authentication    (AUTHENTICATION) = SERVER
  Alternate authentication       (ALTERNATE_AUTH_ENC) = NOT_SPECIFIED
  Trusted client authentication      (TRUST_CLNTAUTH) = CLIENT
 ```
-Let’s try connecting again… Nope. Same error. Over to you AI (Another Idiot)… After much to-ing and fro-ing, and many false recommendations from Copilot, I ended up creating another WSL Linux user, **db2user** – which, we will find, was unnecessary.
+Let’s try connecting again… Nope. Same error. After this, I kind of gave up, having reached the end of my LUW sysadm knowledge. Over to you AI (Another Idiot)… After much to-ing and fro-ing, and many false recommendations (Hallucinations? Lies?) from Copilot, I ended up creating another WSL Linux user, ``db2user`` – which, we will find, was unnecessary.
 ```
 sudo adduser db2user
 sudo passwd db2user
 db2 connect to SAMPLE 
 db2 grant connect on database to user db2user
 ```
-I could connect to my instance nicely, but could I connect to my instance from Windows itself? So I tried it…
+I could connect to my instance nicely, but could I connect to my instance from Windows itself? So I tried it with the PowerShell command, ``Test-NetConnection localhost -Port 25000``
 ```
-❯ Test-NetConnection localhost -Port 25000
 WARNING: TCP connect to (::1 : 25000) failed
 ComputerName     : localhost
 RemoteAddress    : 127.0.0.1
@@ -59,7 +57,14 @@ InterfaceAlias   : Loopback Pseudo-Interface 1
 SourceAddress    : 127.0.0.1
 TcpTestSucceeded : True
 ```
-Yay! Windows recognised the open port, so could I connect to Db2?
+Yay! Windows recognised the open port, so could I connect to Db2? First of all, I catalogued the WSL node, then catalogued the SAMPLE database:
+```
+❯ db2 catalog tcpip node WSL remote localhost server 25000
+DB20000I  The CATALOG TCPIP NODE command completed successfully.
+> db2 catalog db SAMPLE at node WSL
+DB20000I  The CATALOG DATABASE command completed successfully.
+```
+Then, the moment of truth...
 ```
 ❯ db2 connect to SAMPLE
 SQL30082N  Security processing failed with reason "3" ("PASSWORD MISSING").
@@ -69,9 +74,9 @@ SQL1639N  The database server was unable to perform authentication
 because security-related database manager files on the server do not
 have the required operating system permissions.  SQLSTATE=08001
 ```
-BINGO! That was it! On Linux (including WSL), Db2 performs password authentication via setuid helper binaries, most importantly:
+This seemed significant, so I copied and pasted it into Copilot, who responded with "BINGO! That was it!" On Linux (including WSL), Db2 performs password authentication via setuid helper binaries, most importantly:
 
-**~/sqllib/security/db2ckpw**
+``~/sqllib/security/db2ckpw``
 
 This binary must be:
 - owned by the instance owner (or root)
@@ -102,7 +107,14 @@ Restarted Db2, and tried again…
  SQL authorization ID   = DB2USER
  Local database alias   = SAMPLE
 ```
-Yay! 🎉Result.
+
+Yay! 🎉Result. It worked! I could connect to my WSL Db2 instance from Windows!
+
+I then tried registering the database using the new IBM Db2 Developer Extension in VS Code - Perfect!
+
+<img width="419" height="497" alt="image" src="https://github.com/user-attachments/assets/4f0ee09f-6c66-4243-a61b-f72b25822ab5" />
+
+So far, I am suitably impressed with the Extension. I expect another blog post will ensue.
 
 ---
 
@@ -128,9 +140,8 @@ Before finding the actual cause, I had to find out the hard way that Db2 didn't 
 
 If Windows can reach the port and Db2 is working locally, none of those are your problem.
 
----
 
-#### The Actual Root Cause: `db2ckpw`
+#### What *Really* Mattered: `db2ckpw`
 
 On Linux, Db2 doesn't validate remote passwords itself. It delegates that work to a privileged helper binary:
 
@@ -159,7 +170,6 @@ have the required operating system permissions.  SQLSTATE=08001
 
 `SQL1639N` is actually a useful error once you know what it's pointing at. The cryptic `ERRORCODE=-4499` you'll see from JDBC is the same underlying failure, just reported at the driver level.
 
----
 
 #### Why WSL Is Especially Prone to This
 
@@ -173,7 +183,7 @@ WSL fully supports Linux setuid semantics — but it doesn't protect them from y
 
 What makes this particularly hard to catch: local connections keep working regardless. The setuid bit is only exercised during remote authentication. You can run Db2 locally for weeks without noticing it's broken.
 
----
+
 
 ## The Fix
 
@@ -213,25 +223,6 @@ db2 connect to <DBNAME> user <your_wsl_username> using <password>
 
 ---
 
-## Diagnostic Flow
-
-If you're not sure where you are in the debugging process, this covers the likely paths:
-
-```mermaid
-flowchart TD
-    A[Db2 works inside WSL locally] --> B{Windows can reach Db2 port?}
-    B -- No --> C[Networking / firewall issue\nCheck WSL port forwarding]
-    B -- Yes --> D{Connecting as instance owner?}
-    D -- Yes --> E[Remote auth forbidden by design\nUse a different Linux user]
-    D -- No --> F{Getting SQL1639N or ERRORCODE -4499?}
-    F -- No --> G[Check Windows-side catalog\ndb2 catalog tcpip node / catalog db]
-    F -- Yes --> H{db2ckpw is root-owned and setuid?}
-    H -- No --> I["sudo chown root:root ~/sqllib/security/db2ckpw\nsudo chmod 4755 ~/sqllib/security/db2ckpw\ndb2stop && db2start ✅"]
-    H -- Yes --> J[Connection succeeds]
-```
-
----
-
 ## Quick Checklist
 
 Before touching anything else, verify these five things:
@@ -241,10 +232,11 @@ Before touching anything else, verify these five things:
 | TCP/IP listener active | `ss -lntp \| grep 25000` |
 | Not connecting as instance owner | `db2 get instance` — compare with your login |
 | Login user has a Linux password | `sudo passwd <username>` |
-| Database catalogued on Windows side | `db2 list node directory` |
+| WSL node catalogued on Windows side | `db2 list node directory` |
+| Database catalogued on Windows side | `db2 list database directory` |
 | `db2ckpw` is setuid-root | `ls -l ~/sqllib/security/db2ckpw` — look for `-rwsr-xr-x` |
 
-If the fifth row isn't right, nothing else matters.
+If the sixth row isn't right, nothing else matters.
 
 ---
 
