@@ -8,6 +8,7 @@
 
 Recently, I installed Db2 (LUW) 12.1.4 on Ubuntu 24.04 running under WSL (Windows Subsystem for Linux) on my Windows laptop. All went well. I could access it via the db2cli and via home-grown Python code (no authentication necessary, as I was connecting locally). I was happy. Slightly disappointed that IBM had dropped support for the DB2Connect extension for Visual Studio Code. Imagine my delight when I heard that IBM were replacing it with the IBM Db2 Developer Extension! I tried it out immediately. And was immediately disappointed. Not with the extension itself, but the fact that I couldn’t get it to talk to Db2 in the first place. This is my story.
 
+---
 ### The Middle
 
 I wouldn’t have guessed that I’d fall at the first hurdle - Trying to register my local Db2 instance! It returned:
@@ -17,18 +18,18 @@ Connection test failed
 Database connection failed. Please verify connection parameters. ERRORCODE=-4499, SQLSTATE=08001
 ```
 My username was correct, my password was correct, my hostname was correct. Hmmm… What was the port number ? 50000? No. 25000? No. OK. Check the port number.
-```
+```bash
 db2 get dbm cfg | grep -i comm
 ```
 …Nothing. Aha! Let’s fix that.
-```
+```bash
 db2set DB2COMM=TCPIP
 db2 update dbm cfg using SVCENAME 25000
 db2stop
 db2start
 ```
 Confirm it is listening:
-```
+```bash
 ss -lntp | grep 25000
 LISTEN 0      4096              0.0.0.0:25000      0.0.0.0:*    users:(("db2sysc",pid=13958,fd=26))
 ```
@@ -40,7 +41,7 @@ Yay! Now check that the dbm authentication is correct, with ``db2 get dbm cfg | 
  Trusted client authentication      (TRUST_CLNTAUTH) = CLIENT
 ```
 Let’s try connecting again… Nope. Same error. After this, I kind of gave up, having reached the end of my LUW sysadm knowledge. Over to you AI (Another Idiot)… After much to-ing and fro-ing, and many false recommendations (Hallucinations? Lies?) from Copilot, I ended up creating another WSL Linux user, ``db2user`` – which, we will find, was unnecessary.
-```
+```bash
 sudo adduser db2user
 sudo passwd db2user
 db2 connect to SAMPLE 
@@ -57,14 +58,14 @@ SourceAddress    : 127.0.0.1
 TcpTestSucceeded : True
 ```
 Yay! Windows recognised the open port, so could I connect to Db2? First of all, I catalogued the WSL node, then catalogued the SAMPLE database:
-```
+```bat
 ❯ db2 catalog tcpip node WSL remote localhost server 25000
 DB20000I  The CATALOG TCPIP NODE command completed successfully.
 > db2 catalog db SAMPLE at node WSL
 DB20000I  The CATALOG DATABASE command completed successfully.
 ```
 Then, the moment of truth...
-```
+```bat
 ❯ db2 connect to SAMPLE
 SQL30082N  Security processing failed with reason "3" ("PASSWORD MISSING").
 SQLSTATE=08001
@@ -86,20 +87,20 @@ This binary must be:
 If any of that is wrong, Db2 cannot authenticate remote users → SQL1639N.
 
 So I set the correct ownership:
-```
+```bash
 sudo chown root:root ~/sqllib/security/db2ckpw
 ```
 I set the correct permissions:
-```
+```bash
 sudo chmod 4755 ~/sqllib/security/db2ckpw
 ```
 Checked the output:
-```
+```bash
 ls -l ~/sqllib/security/db2ckpw
 -rwsr-xr-x 1 root root 3033512 Mar 12 17:55
 ```
 Restarted Db2, and tried again…
-```
+```bat
 ❯ db2 connect to SAMPLE user db2user using password
    Database Connection Information
  Database server        = DB2/LINUXX8664 12.1.4.0
@@ -183,7 +184,7 @@ WSL fully supports Linux setuid semantics — but it doesn't protect them from y
 What makes this particularly hard to catch: local connections keep working regardless. The setuid bit is only exercised during remote authentication. You can run Db2 locally for weeks without noticing it's broken.
 
 
-
+---
 ## The Fix
 
 Inside WSL:
