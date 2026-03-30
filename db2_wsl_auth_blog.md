@@ -15,7 +15,6 @@ I wouldn’t have guessed that I’d fall at the first hurdle - Trying to regist
 ```
 Connection test failed
 Database connection failed. Please verify connection parameters. ERRORCODE=-4499, SQLSTATE=08001
-
 ```
 My username was correct, my password was correct, my hostname was correct. Hmmm… What was the port number ? 50000? No. 25000? No. OK. Check the port number.
 ```
