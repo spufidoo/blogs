@@ -216,7 +216,7 @@ db2stop
 db2start
 ```
 
-Then from Windows:
+Then from Windows (assuming that your node and database are already catalogued):
 
 ```bat
 db2 connect to <DBNAME> user <your_wsl_username> using <password>
