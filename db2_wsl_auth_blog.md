@@ -19,7 +19,8 @@ Database connection failed. Please verify connection parameters. ERRORCODE=-4499
 ```
 My username was correct, my password was correct, my hostname was correct. Hmmm… What was the port number ? 50000? No. 25000? No. OK. Check the port number.
 ```bash
-db2 get dbm cfg | grep -i comm
+db2 get dbm cfg | grep -i svcename
+db2set -all | grep -i comm
 ```
 …Nothing. Aha! Let’s fix that.
 ```bash
